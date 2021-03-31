@@ -3,8 +3,6 @@ const std = @import("std");
 const Card = @import("Card.zig");
 const c = @import("c.zig");
 
-const ioctl = std.os.linux.ioctl;
-
 pub fn main() !void {
     try actualMain();
     //actualMain() catch |err| {
@@ -31,6 +29,7 @@ fn actualMain() !void {
         base: []align(@alignOf(u32)) u8,
         width: usize,
         height: usize,
+        crtc: Card.drm_mode_crtc,
     };
 
     var framebuffers: [10]?Framebuffer = undefined;
@@ -68,7 +67,7 @@ fn actualMain() !void {
             }
 
             //Check if the connector is OK to use (connected to something)
-            if (connector.available_encoders.len < 1 or connector.modes.len < 1 or connector.current_encoder == null or connector.connection == null) {
+            if (connector.available_encoders.len < 1 or connector.modes.len < 1 or connector.current_encoder == null or connector.connection != .connected) {
                 std.log.info("connector[{}]: Not connected", .{connector_index});
                 continue;
             } else {
@@ -79,63 +78,31 @@ fn actualMain() !void {
                 });
             }
 
-            //If we create the buffer later, we can get the size of the screen first.
-            //This must be a valid mode, so it's probably best to do this after we find
-            //a valid crtc with modes.
-            var create_dumb = c.drm_mode_create_dumb{
-                .width = connector.modes[0].hdisplay,
-                .height = connector.modes[0].vdisplay,
-                .bpp = 32,
-                .flags = 0,
-                .pitch = 0,
-                .size = 0,
-                .handle = 0,
-            };
+            var buffer = try card.createDumbBuffer(
+                connector.modes[0].hdisplay,
+                connector.modes[0].vdisplay,
+                32,
+            );
+            errdefer buffer.deinit();
 
-            var res: usize = undefined;
+            var map_offset = try buffer.map();
 
-            res = ioctl(card.file.handle, c.DRM_IOCTL_MODE_CREATE_DUMB, @ptrToInt(&create_dumb));
-            std.log.warn("ioctl({}) = {}", .{ @src(), res });
+            var fb_id = try buffer.addFB(24); // 24 bit color depth
 
-            std.debug.print("{}: dumb.create = {}\n", .{ connector_index, create_dumb });
-
-            var cmd_dumb = c.drm_mode_fb_cmd{
-                .handle = create_dumb.handle,
-                .width = create_dumb.width,
-                .height = create_dumb.height,
-                .bpp = create_dumb.bpp,
-                .pitch = create_dumb.pitch,
-                .depth = 24,
-
-                .fb_id = 0,
-            };
-            res = ioctl(card.file.handle, c.DRM_IOCTL_MODE_ADDFB, @ptrToInt(&cmd_dumb));
-            std.log.warn("ioctl({}) = {}", .{ @src().line, res });
-
-            std.debug.print("{}: dumb.addfb = {}\n", .{ connector_index, cmd_dumb });
-
-            var map_dumb = c.drm_mode_map_dumb{
-                .handle = create_dumb.handle,
-
-                .pad = 0,
-                .offset = 0,
-            };
-            res = ioctl(card.file.handle, c.DRM_IOCTL_MODE_MAP_DUMB, @ptrToInt(&map_dumb));
-            std.log.warn("ioctl({}) = {}", .{ @src().line, res });
-
-            std.debug.print("{}: dumb.map = {}\n", .{ connector_index, map_dumb });
+            var enc = try card.getEncoder(connector.current_encoder.?);
 
             var fb = Framebuffer{
                 .base = try std.os.mmap(
                     null,
-                    create_dumb.size,
+                    buffer.size,
                     std.os.linux.PROT_READ | std.os.linux.PROT_WRITE,
                     std.os.linux.MAP_SHARED,
                     card.file.handle,
-                    map_dumb.offset,
+                    map_offset,
                 ),
-                .width = @intCast(usize, create_dumb.width),
-                .height = @intCast(usize, create_dumb.height),
+                .width = buffer.width,
+                .height = buffer.height,
+                .crtc = try card.getCrtc(enc.crtc_id),
             };
 
             // //------------------------------------------------------------------------------
@@ -145,29 +112,17 @@ fn actualMain() !void {
             // std.log.info("{}: {} : mode: {}, prop: {}, enc: {}", .{ i, conn.connection, conn.count_modes, conn.count_props, conn.count_encoders });
             // std.log.info("{}: modes: {}x{} FB: {*}", .{ i, conn_mode_buf[0].hdisplay, conn_mode_buf[0].vdisplay, framebuffers[i].base });
 
-            var enc = std.mem.zeroes(c.drm_mode_get_encoder);
-
-            enc.encoder_id = @truncate(c_uint, @enumToInt(connector.current_encoder.?));
-            res = ioctl(card.file.handle, c.DRM_IOCTL_MODE_GETENCODER, @ptrToInt(&enc)); //get encoder
-            std.log.warn("ioctl({}) = {}", .{ @src().line, res });
-
-            std.log.info("\tencoder = {}", .{enc});
-
-            var crtc = std.mem.zeroes(c.drm_mode_crtc);
-
-            crtc.crtc_id = enc.crtc_id;
-            res = ioctl(card.file.handle, c.DRM_IOCTL_MODE_GETCRTC, @ptrToInt(&crtc));
-            std.log.warn("ioctl({}) = {}", .{ @src().line, res });
+            var crtc = fb.crtc;
 
             std.log.info("crtc = {}", .{crtc});
 
-            crtc.fb_id = cmd_dumb.fb_id;
+            crtc.fb_id = fb_id;
             crtc.set_connectors_ptr = @ptrToInt(&connector_id);
             crtc.count_connectors = 1;
             crtc.mode = connector.modes[0];
             crtc.mode_valid = 1;
-            res = ioctl(card.file.handle, c.DRM_IOCTL_MODE_SETCRTC, @ptrToInt(&crtc));
-            std.log.warn("ioctl({}) = {}", .{ @src().line, res });
+
+            try card.setCrtc(crtc);
 
             framebuffers[connector_index] = fb;
         }
@@ -186,11 +141,10 @@ fn actualMain() !void {
 
         var i: usize = 0;
         while (i < 30) : (i += 1) {
-            var j: usize = 0;
             for (framebuffers) |fb_or_null| {
                 const fb = fb_or_null orelse continue;
 
-                const base_col: u32 = (random.random.int(u32)) & 0x00ffffff;
+                const base_col: u32 = @truncate(u8, i);
 
                 var y: usize = 0;
                 while (y < fb.height) : (y += 1) {
@@ -198,7 +152,7 @@ fn actualMain() !void {
                     while (x < fb.width) : (x += 1) {
                         const col = base_col ^
                             @truncate(u32, (x & 0xFF) << 0) ^
-                            @truncate(u32, (y & 0xFF) << 8);
+                            @truncate(u32, (y & 0xFF) << 0);
 
                         const location = y * (@intCast(usize, fb.width)) + x;
 
