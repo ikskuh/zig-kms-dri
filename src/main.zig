@@ -17,7 +17,7 @@ fn actualMain() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    const allocator = &gpa.allocator;
+    const allocator = gpa.allocator();
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -38,7 +38,7 @@ fn actualMain() !void {
         try card.getMaster();
         defer card.dropMaster() catch |e| std.debug.panic("{}", .{e});
 
-        var resource_handles = try card.getResourceHandles(&arena.allocator);
+        var resource_handles = try card.getResourceHandles(arena.allocator());
         defer resource_handles.deinit();
 
         std.log.info("fb: {}, crtc: {}, conn: {}, enc: {}", .{
@@ -59,7 +59,7 @@ fn actualMain() !void {
             std.log.info("\tconnection      = {}", .{connector.connection});
 
             for (connector.modes) |mode, i| {
-                std.log.info("\tmode[{}]        = {}×{}\t{}Hz,\t\"{s}\"", .{ i, mode.hdisplay, mode.vdisplay, mode.vrefresh, std.mem.spanZ(@ptrCast(*const [32:0]u8, &mode.name)) });
+                std.log.info("\tmode[{}]        = {}×{}\t{}Hz,\t\"{s}\"", .{ i, mode.hdisplay, mode.vdisplay, mode.vrefresh, std.mem.sliceTo(@ptrCast(*const [32:0]u8, &mode.name), 0) });
             }
 
             for (connector.available_encoders) |encoder, i| {
@@ -95,8 +95,8 @@ fn actualMain() !void {
                 .base = try std.os.mmap(
                     null,
                     buffer.size,
-                    std.os.linux.PROT_READ | std.os.linux.PROT_WRITE,
-                    std.os.linux.MAP_SHARED,
+                    std.os.linux.PROT.READ | std.os.linux.PROT.WRITE,
+                    std.os.linux.MAP.SHARED,
                     card.file.handle,
                     map_offset,
                 ),
@@ -137,7 +137,7 @@ fn actualMain() !void {
     }
 
     {
-        var random = std.rand.DefaultPrng.init(@bitCast(u64, std.time.milliTimestamp()));
+        //var random = std.rand.DefaultPrng.init(@bitCast(u64, std.time.milliTimestamp()));
 
         var i: usize = 0;
         while (i < 30) : (i += 1) {

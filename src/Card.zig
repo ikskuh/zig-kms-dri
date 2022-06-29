@@ -8,7 +8,7 @@ file: std.fs.File,
 
 pub fn open(path: []const u8) !Card {
     return Card{
-        .file = try std.fs.cwd().openFile(path, .{ .read = true, .write = true }),
+        .file = try std.fs.cwd().openFile(path, .{ .mode = .read_write }),
     };
 }
 
@@ -28,7 +28,7 @@ fn ioctl(self: Card, request: u32, arg: anytype) !void {
     else
         @compileError("Expects integer or pointer!");
 
-    const ErrNo = extern enum(isize) {
+    const ErrNo = enum(isize) {
         EPERM = 1,
         ENOENT = 2,
         ESRCH = 3,
@@ -184,7 +184,7 @@ fn ioctl(self: Card, request: u32, arg: anytype) !void {
 
     const err = std.os.linux.ioctl(self.file.handle, request, ptr);
     if (err != 0) {
-        std.log.emerg("ioctl failed: {}/{}/{}", .{ err, @bitCast(isize, err), @intToEnum(ErrNo, -@bitCast(isize, err)) });
+        std.log.err("ioctl failed: {}/{}/{}", .{ err, @bitCast(isize, err), @intToEnum(ErrNo, -@bitCast(isize, err)) });
         return error.UnknownError;
     }
 }
@@ -197,7 +197,7 @@ pub fn dropMaster(self: Card) !void {
     try self.ioctl(c.DRM_IOCTL_DROP_MASTER, 0);
 }
 
-pub fn getResourceHandles(self: Card, allocator: *std.mem.Allocator) !ResourceHandles {
+pub fn getResourceHandles(self: Card, allocator: std.mem.Allocator) !ResourceHandles {
     var res = std.mem.zeroes(drm_mode_card_res);
     try self.ioctl(c.DRM_IOCTL_MODE_GETRESOURCES, &res);
 
@@ -229,7 +229,7 @@ pub fn getResourceHandles(self: Card, allocator: *std.mem.Allocator) !ResourceHa
     };
 }
 
-pub fn getConnector(self: Card, allocator: *std.mem.Allocator, connector_id: ConnectorID) !Connector {
+pub fn getConnector(self: Card, allocator: std.mem.Allocator, connector_id: ConnectorID) !Connector {
     var conn = std.mem.zeroes(drm_mode_get_connector);
 
     conn.connector_id = connector_id;
@@ -337,14 +337,14 @@ pub fn createDumbBuffer(self: Card, width: u32, height: u32, bpp: u8) !DumbBuffe
     };
 }
 
-pub const FramebufferID = extern enum(u32) { _ };
-pub const ConnectorID = extern enum(u32) { _ };
-pub const EncoderID = extern enum(u32) { _ };
-pub const CrtcID = extern enum(u32) { _ };
-pub const PropertyID = extern enum(u32) { _ };
+pub const FramebufferID = enum(u32) { _ };
+pub const ConnectorID = enum(u32) { _ };
+pub const EncoderID = enum(u32) { _ };
+pub const CrtcID = enum(u32) { _ };
+pub const PropertyID = enum(u32) { _ };
 
 pub const ResourceHandles = struct {
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     fbs: []align(8) FramebufferID,
     encoders: []align(8) EncoderID,
@@ -361,7 +361,7 @@ pub const ResourceHandles = struct {
 };
 
 pub const Connector = struct {
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     current_encoder: ?EncoderID,
 
@@ -407,7 +407,7 @@ pub const Size = struct {
     height: usize,
 };
 
-pub const DumbBufferID = extern enum(u32) { _ };
+pub const DumbBufferID = enum(u32) { _ };
 pub const DumbBuffer = struct {
     card: Card,
     handle: DumbBufferID,
@@ -420,7 +420,7 @@ pub const DumbBuffer = struct {
 
     pub fn deinit(self: *DumbBuffer) void {
         var destroy_buf = drm_mode_destroy_dumb{ .handle = self.handle };
-        self.card.ioctl(c.DRM_IOCTL_MODE_DESTROY_DUMB, &destroy_buf) catch |e| std.log.emerg("Failed to destroy dumb buffer: {}", .{e});
+        self.card.ioctl(c.DRM_IOCTL_MODE_DESTROY_DUMB, &destroy_buf) catch |e| std.log.err("Failed to destroy dumb buffer: {}", .{e});
         self.* = undefined;
     }
 
@@ -545,7 +545,7 @@ const drm_mode_get_connector = extern struct {
     pad: u32,
 };
 
-const drm_subpixel_order = extern enum(u32) {
+const drm_subpixel_order = enum(u32) {
     unknown = 0,
     horizontal_rgb = 1,
     horizontal_bgr = 2,
@@ -554,7 +554,7 @@ const drm_subpixel_order = extern enum(u32) {
     none = 5,
 };
 
-const drm_connector_type = extern enum(u32) {
+const drm_connector_type = enum(u32) {
     unknown = 0,
     vga = 1,
     dvii = 2,
@@ -577,7 +577,7 @@ const drm_connector_type = extern enum(u32) {
     spi = 19,
 };
 
-const drm_connector_status = extern enum(u32) {
+const drm_connector_status = enum(u32) {
     connected = 1,
     disconnected = 2,
     unknown = 3,
